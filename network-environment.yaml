@@ -1,4 +1,8 @@
 resource_registry:
+  OS::TripleO::ControllerConfig: /home/stack/rdo-liberty/my-overcloud/puppet/controller-config-pacemaker.yaml
+  OS::TripleO::Tasks::ControllerPrePuppet: /home/stack/rdo-liberty/my-overcloud/extraconfig/tasks/pre_puppet_pacemaker.yaml
+  OS::TripleO::Tasks::ControllerPostPuppet: /home/stack/rdo-liberty/my-overcloud/extraconfig/tasks/post_puppet_pacemaker.yaml
+
 #  OS::TripleO::BlockStorage::Net::SoftwareConfig: /home/stack/rdo-newton/my-overcloud/network/config/single-nic-vlans/cinder-storage.yaml
   OS::TripleO::Compute::Net::SoftwareConfig: /home/stack/rdo-newton/my-overcloud/network/config/single-nic-vlans/compute.yaml
   OS::TripleO::Controller::Net::SoftwareConfig: /home/stack/rdo-newton/my-overcloud/network/config/single-nic-vlans/controller.yaml

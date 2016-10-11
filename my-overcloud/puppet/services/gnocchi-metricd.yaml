@@ -18,6 +18,13 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
+  MonitoringSubscriptionGnocchiMetricd:
+    default: 'overcloud-gnocchi-metricd'
+    type: string
+  GnocchiMetricdWorkers:
+    default: ''
+    description: Number of workers for Gnocchi MetricD
+    type: string
 
 resources:
   GnocchiServiceBase:
@@ -32,9 +39,10 @@ outputs:
     description: Role data for the Gnocchi role.
     value:
       service_name: gnocchi_metricd
+      monitoring_subscription: {get_param: MonitoringSubscriptionGnocchiMetricd}
       config_settings:
         map_merge:
           - get_attr: [GnocchiServiceBase, role_data, config_settings]
-          - gnocchi::metricd::manage_service: false
+          - gnocchi::metricd::workers: {get_param: GnocchiMetricdWorkers}
       step_config: |
         include ::tripleo::profile::base::gnocchi::metricd

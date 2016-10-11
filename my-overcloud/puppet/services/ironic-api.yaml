@@ -22,6 +22,9 @@ parameters:
     description: The password for the Ironic service and db account, used by the Ironic services
     type: string
     hidden: true
+  MonitoringSubscriptionIronicApi:
+    default: 'overcloud-ironic-api'
+    type: string
 
 resources:
   IronicBase:
@@ -36,28 +39,45 @@ outputs:
     description: Role data for the Ironic API role.
     value:
       service_name: ironic_api
+      monitoring_subscription: {get_param: MonitoringSubscriptionIronicApi}
       config_settings:
         map_merge:
           - get_attr: [IronicBase, role_data, config_settings]
-          # NOTE(dtantsur): the my_ip parameter is heavily overloaded in
-          # ironic. It's used as a default value for e.g. TFTP server IP,
-          # glance and neutron endpoints, virtual console IP. We override
-          # the TFTP server IP in ironic-conductor.yaml as it should not be
-          # the VIP, but rather a real IP of the controller.
-          - ironic::my_ip: {get_param: [EndpointMap, MysqlInternal, host]}
-            ironic::api::admin_password: {get_param: IronicPassword}
-            ironic::api::admin_tenant_name: 'service'
-            ironic::api::admin_user: 'ironic'
-            ironic::api::auth_uri: {get_param: [EndpointMap, KeystoneInternal, uri] }
-            ironic::api::identity_uri: {get_param: [EndpointMap, KeystoneAdmin, uri_no_suffix]}
+          - ironic::api::authtoken::password: {get_param: IronicPassword}
+            ironic::api::authtoken::project_name: 'service'
+            ironic::api::authtoken::username: 'ironic'
+            ironic::api::authtoken::auth_uri: {get_param: [EndpointMap, KeystoneInternal, uri] }
+            ironic::api::authtoken::auth_url: {get_param: [EndpointMap, KeystoneAdmin, uri_no_suffix]}
+            # NOTE: bind IP is found in Heat replacing the network name with the
+            # local node IP for the given network; replacement examples
+            # (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            ironic::api::host_ip: {get_param: [ServiceNetMap, IronicApiNetwork]}
             ironic::api::port: {get_param: [EndpointMap, IronicInternal, port]}
             # This is used to build links in responses
             ironic::api::public_endpoint: {get_param: [EndpointMap, IronicPublic, uri_no_suffix]}
-            ironic::keystone::auth::admin_url: {get_param: [EndpointMap, IronicAdmin, uri]}
-            ironic::keystone::auth::internal_url: {get_param: [EndpointMap, IronicInternal, uri]}
-            ironic::keystone::auth::public_url: {get_param: [EndpointMap, IronicPublic, uri]}
-            ironic::keystone::auth::auth_name: 'ironic'
-            ironic::keystone::auth::password: {get_param: IronicPassword }
-            ironic::keystone::auth::tenant: 'service'
+            tripleo.ironic_api.firewall_rules:
+              '133 ironic api':
+                dport:
+                  - 6385
+                  - 13385
       step_config: |
         include ::tripleo::profile::base::ironic::api
+      service_config_settings:
+        keystone:
+          ironic::keystone::auth::admin_url: {get_param: [EndpointMap, IronicAdmin, uri_no_suffix]}
+          ironic::keystone::auth::internal_url: {get_param: [EndpointMap, IronicInternal, uri_no_suffix]}
+          ironic::keystone::auth::public_url: {get_param: [EndpointMap, IronicPublic, uri_no_suffix]}
+          ironic::keystone::auth::auth_name: 'ironic'
+          ironic::keystone::auth::password: {get_param: IronicPassword }
+          ironic::keystone::auth::tenant: 'service'
+        mysql:
+          ironic::db::mysql::password: {get_param: IronicPassword}
+          ironic::db::mysql::user: ironic
+          ironic::db::mysql::host: {get_param: [EndpointMap, MysqlInternal, host_nobrackets]}
+          ironic::db::mysql::dbname: ironic
+          ironic::db::mysql::allowed_hosts:
+            - '%'
+            - "%{hiera('mysql_bind_host')}"

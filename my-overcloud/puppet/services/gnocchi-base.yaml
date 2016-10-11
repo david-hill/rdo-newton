@@ -40,6 +40,10 @@ parameters:
     description: The password for the redis service account.
     type: string
     hidden: true
+  Debug:
+    type: string
+    default: ''
+    description: Set to True to enable debugging on all services.
 
 outputs:
   aux_parameters:
@@ -52,7 +56,8 @@ outputs:
       service_name: gnocchi_base
       config_settings:
         #Gnocchi engine
-        gnocchi::debug: {get_input: debug}
+        gnocchi_redis_password: {get_param: RedisPassword}
+        gnocchi::debug: {get_param: Debug}
         gnocchi::db::database_connection:
           list_join:
             - ''
@@ -62,16 +67,7 @@ outputs:
               - '@'
               - {get_param: [EndpointMap, MysqlInternal, host]}
               - '/gnocchi'
-        gnocchi::db::mysql::password: {get_param: GnocchiPassword}
         gnocchi::db::sync::extra_opts: '--skip-storage --create-legacy-resource-types'
-        gnocchi::storage::coordination_url:
-          list_join:
-            - ''
-            - - 'redis://:'
-              - {get_param: RedisPassword}
-              - '@'
-              - "%{hiera('redis_vip')}"
-              - ':6379/'
         gnocchi::storage::swift::swift_user: 'service:gnocchi'
         gnocchi::storage::swift::swift_auth_version: 2
         gnocchi::storage::swift::swift_key: {get_param: GnocchiPassword}
@@ -85,15 +81,8 @@ outputs:
             - {get_param: CephClientUserName}
             - 'keyring'
         #Gnocchi statsd
-        gnocchi::statsd::manage_service: false
         gnocchi::statsd::resource_id: '0a8b55df-f90f-491c-8cb9-7cdecec6fc26'
         gnocchi::statsd::user_id: '27c0d3f8-e7ee-42f0-8317-72237d1c5ae3'
         gnocchi::statsd::project_id: '6c38cd8d-099a-4cb2-aecf-17be688e8616'
         gnocchi::statsd::flush_delay: 10
         gnocchi::statsd::archive_policy_name: 'low'
-        gnocchi::db::mysql::user: gnocchi
-        gnocchi::db::mysql::host: {get_param: [EndpointMap, MysqlInternal, host_nobrackets]}
-        gnocchi::db::mysql::dbname: gnocchi
-        gnocchi::db::mysql::allowed_hosts:
-          - '%'
-          - "%{hiera('mysql_bind_host')}"

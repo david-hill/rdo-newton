@@ -18,10 +18,13 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
+  MonitoringSubscriptionGnocchiStatsd:
+    default: 'overcloud-gnocchi-statsd'
+    type: string
 
 resources:
   GnocchiServiceBase:
-    type: ../gnocchi-base.yaml
+    type: ../gnocchi-statsd.yaml
     properties:
       ServiceNetMap: {get_param: ServiceNetMap}
       DefaultPasswords: {get_param: DefaultPasswords}
@@ -32,10 +35,12 @@ outputs:
     description: Role data for the Gnocchi role.
     value:
       service_name: gnocchi_statsd
+      monitoring_subscription: {get_param: MonitoringSubscriptionGnocchiStatsd}
       config_settings:
         map_merge:
           - get_attr: [GnocchiServiceBase, role_data, config_settings]
           - gnocchi::statsd::manage_service: false
+            gnocchi::statsd::enabled: false
             tripleo::profile::pacemaker::gnocchi::gnocchi_indexer_backend: {get_attr: [GnocchiServiceBase, aux_parameters, gnocchi_indexer_backend]}
       step_config: |
         include ::tripleo::profile::pacemaker::gnocchi::statsd

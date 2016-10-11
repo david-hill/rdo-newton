@@ -30,6 +30,14 @@ parameters:
     type: string
     default: 'regionOne'
     description: Keystone region for endpoint
+  MonitoringSubscriptionSaharaApi:
+    default: 'overcloud-sahara-api'
+    type: string
+  SaharaApiLoggingSource:
+    type: json
+    default:
+      tag: openstack.sahara.api
+      path: /var/log/sahara/sahara-api.log
 
 resources:
   SaharaBase:
@@ -44,16 +52,21 @@ outputs:
     description: Role data for the Sahara API role.
     value:
       service_name: sahara_api
+      monitoring_subscription: {get_param: MonitoringSubscriptionSaharaApi}
+      logging_source: {get_param: SaharaApiLoggingSource}
+      logging_groups:
+        - sahara
       config_settings:
         map_merge:
           - get_attr: [SaharaBase, role_data, config_settings]
           - sahara::port: {get_param: [EndpointMap, SaharaInternal, port]}
             sahara::service::api::api_workers: {get_param: SaharaWorkers}
-            sahara::keystone::auth::public_url: {get_param: [EndpointMap, SaharaPublic, uri]}
-            sahara::keystone::auth::internal_url: {get_param: [EndpointMap, SaharaInternal, uri]}
-            sahara::keystone::auth::admin_url: {get_param: [EndpointMap, SaharaAdmin, uri]}
-            sahara::keystone::auth::password: {get_param: SaharaPassword }
-            sahara::keystone::auth::region: {get_param: KeystoneRegion}
+            # NOTE: bind IP is found in Heat replacing the network name with the local node IP
+            # for the given network; replacement examples (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            sahara::host: {get_param: [ServiceNetMap, SaharaApiNetwork]}
             tripleo.sahara_api.firewall_rules:
               '132 sahara':
                 dport:
@@ -61,3 +74,19 @@ outputs:
                   - 13386
       step_config: |
         include ::tripleo::profile::base::sahara::api
+      service_config_settings:
+        keystone:
+          sahara::keystone::auth::tenant: 'service'
+          sahara::keystone::auth::public_url: {get_param: [EndpointMap, SaharaPublic, uri]}
+          sahara::keystone::auth::internal_url: {get_param: [EndpointMap, SaharaInternal, uri]}
+          sahara::keystone::auth::admin_url: {get_param: [EndpointMap, SaharaAdmin, uri]}
+          sahara::keystone::auth::password: {get_param: SaharaPassword }
+          sahara::keystone::auth::region: {get_param: KeystoneRegion}
+        mysql:
+          sahara::db::mysql::password: {get_param: SaharaPassword}
+          sahara::db::mysql::user: sahara
+          sahara::db::mysql::host: {get_param: [EndpointMap, MysqlInternal, host_nobrackets]}
+          sahara::db::mysql::dbname: sahara
+          sahara::db::mysql::allowed_hosts:
+            - '%'
+            - "%{hiera('mysql_bind_host')}"

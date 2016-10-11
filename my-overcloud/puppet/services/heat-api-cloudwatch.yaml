@@ -22,6 +22,14 @@ parameters:
     default: 0
     description: Number of workers for Heat service.
     type: number
+  MonitoringSubscriptionHeatApiCloudwatch:
+    default: 'overcloud-heat-api-cloudwatch'
+    type: string
+  HeatApiCloudwatchLoggingSource:
+    type: json
+    default:
+      tag: openstack.heat.api.cloudwatch
+      path: /var/log/heat/heat-api-cloudwatch.log
 
 resources:
   HeatBase:
@@ -36,6 +44,10 @@ outputs:
     description: Role data for the Heat Cloudwatch API role.
     value:
       service_name: heat_api_cloudwatch
+      monitoring_subscription: {get_param: MonitoringSubscriptionHeatApiCloudwatch}
+      logging_source: {get_param: HeatApiCloudwatchLoggingSource}
+      logging_groups:
+        - heat
       config_settings:
         map_merge:
           - get_attr: [HeatBase, role_data, config_settings]
@@ -45,5 +57,12 @@ outputs:
                 dport:
                   - 8003
                   - 13003
+            # NOTE: bind IP is found in Heat replacing the network name with the
+            # local node IP for the given network; replacement examples
+            # (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            heat::api_cloudwatch::bind_host: {get_param: [ServiceNetMap, HeatApiNetwork]}
       step_config: |
         include ::tripleo::profile::base::heat::api_cloudwatch

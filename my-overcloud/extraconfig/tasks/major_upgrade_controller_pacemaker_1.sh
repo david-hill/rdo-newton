@@ -4,11 +4,14 @@ set -eu
 
 cluster_sync_timeout=1800
 
-if pcs status 2>&1 | grep -E '(cluster is not currently running)|(OFFLINE:)'; then
-    echo_error "ERROR: upgrade cannot start with some cluster nodes being offline"
-    exit 1
+check_cluster
+check_pcsd
+if [[ -n $(is_bootstrap_node) ]]; then
+    check_clean_cluster
 fi
-
+check_python_rpm
+check_galera_root_password
+check_disk_for_mysql_dump
 
 # We want to disable fencing during the cluster --stop as it might fence
 # nodes where a service fails to stop, which could be fatal during an upgrade
@@ -17,11 +20,42 @@ fi
 STONITH_STATE=$(pcs property show stonith-enabled | grep "stonith-enabled" | awk '{ print $2 }')
 pcs property set stonith-enabled=false
 
-# If for some reason rpm-python are missing we want to error out early enough
-if [ ! rpm -q rpm-python &> /dev/null ]; then
-    echo_error "ERROR: upgrade cannot start without rpm-python installed"
-    exit 1
+# Migrate to HA NG and fix up rabbitmq queues
+# We fix up the rabbitmq ha queues after the migration because it will
+# restart the rabbitmq resource. Doing it after the migration means no other
+# services will be restart as there are no other constraints
+if [[ -n $(is_bootstrap_node) ]]; then
+    migrate_full_to_ng_ha
+    rabbitmq_mitaka_newton_upgrade
 fi
+
+# After migrating the cluster to HA-NG the services not under pacemaker's control
+# are still up and running. We need to stop them explicitely otherwise during the yum
+# upgrade the rpm %post sections will try to do a systemctl try-restart <service>, which
+# is going to take a long time because rabbit is down. By having the service stopped
+# systemctl try-restart is a noop
+
+for service in $(services_to_migrate); do
+    manage_systemd_service stop "${service%%-clone}"
+    # So the reason for not reusing check_resource_systemd is that
+    # I have observed systemctl is-active returning unknown with at least
+    # one service that was stopped (See LP 1627254)
+    timeout=600
+    tstart=$(date +%s)
+    tend=$(( $tstart + $timeout ))
+    check_interval=3
+    while (( $(date +%s) < $tend )); do
+      if [[ "$(systemctl is-active ${service%%-clone})" = "active" ]]; then
+        echo "$service still active, sleeping $check_interval seconds."
+        sleep $check_interval
+      else
+        # we do not care if it is inactive, unknown or failed as long as it is
+        # not running
+        break
+      fi
+
+    done
+done
 
 # In case the mysql package is updated, the database on disk must be
 # upgraded as well. This typically needs to happen during major
@@ -35,77 +69,20 @@ fi
 # on mysql package versionning, but this can be overriden manually
 # to support specific upgrade scenario
 
-# Where to backup current database if mysql need to be upgraded
-MYSQL_BACKUP_DIR=/var/tmp/mysql_upgrade_osp
-MYSQL_TEMP_UPGRADE_BACKUP_DIR=/var/lib/mysql-temp-upgrade-backup
-# Spare disk ratio for extra safety
-MYSQL_BACKUP_SIZE_RATIO=1.2
-
-# Shall we upgrade mysql data directory during the stack upgrade?
-if [ "$mariadb_do_major_upgrade" = "auto" ]; then
-    ret=$(is_mysql_upgrade_needed)
-    if [ $ret = "1" ]; then
-        DO_MYSQL_UPGRADE=1
-    else
-        DO_MYSQL_UPGRADE=0
-    fi
-    echo "mysql upgrade required: $DO_MYSQL_UPGRADE"
-elif [ "$mariadb_do_major_upgrade" = 0 ]; then
-    DO_MYSQL_UPGRADE=0
-else
-    DO_MYSQL_UPGRADE=1
-fi
-
-if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)" ]; then
+if [[ -n $(is_bootstrap_node) ]]; then
     if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
-        if [ -d "$MYSQL_BACKUP_DIR" ]; then
-            echo_error "Error: $MYSQL_BACKUP_DIR exists already. Likely an upgrade failed previously"
-            exit 1
-        fi
-        mkdir "$MYSQL_BACKUP_DIR"
-        if [ $? -ne 0 ]; then
-                echo_error "Error: could not create temporary backup directory $MYSQL_BACKUP_DIR"
-                exit 1
-        fi
-
-        # the /root/.my.cnf is needed because we set the mysql root
-        # password from liberty onwards
-        backup_flags="--defaults-extra-file=/root/.my.cnf -u root --flush-privileges --all-databases --single-transaction"
-        # While not ideal, this step allows us to calculate exactly how much space the dump
-        # will need. Our main goal here is avoiding any chance of corruption due to disk space
-        # exhaustion
-        backup_size=$(mysqldump $backup_flags 2>/dev/null | wc -c)
-        database_size=$(du -cb /var/lib/mysql | tail -1 | awk '{ print $1 }')
-        free_space=$(df -B1 --output=avail "$MYSQL_BACKUP_DIR" | tail -1)
-
-        # we need at least space for a new mysql database + dump of the existing one,
-        # times a small factor for additional safety room
-        # note: bash doesn't do floating point math or floats in if statements,
-        # so use python to apply the ratio and cast it back to integer
-        required_space=$(python -c "from __future__ import print_function; print(\"%d\" % int((($database_size + $backup_size) * $MYSQL_BACKUP_SIZE_RATIO)))")
-        if [ $required_space -ge $free_space ]; then
-                echo_error "Error: not enough free space in $MYSQL_BACKUP_DIR ($required_space bytes required)"
-                exit 1
-        fi
-
         mysqldump $backup_flags > "$MYSQL_BACKUP_DIR/openstack_database.sql"
         cp -rdp /etc/my.cnf* "$MYSQL_BACKUP_DIR"
     fi
 
-    pcs resource disable httpd
-    check_resource httpd stopped 1800
-    pcs resource disable openstack-core
-    check_resource openstack-core stopped 1800
     pcs resource disable redis
     check_resource redis stopped 600
-    pcs resource disable mongod
-    check_resource mongod stopped 600
     pcs resource disable rabbitmq
     check_resource rabbitmq stopped 600
-    pcs resource disable memcached
-    check_resource memcached stopped 600
     pcs resource disable galera
     check_resource galera stopped 600
+    pcs resource disable openstack-cinder-volume
+    check_resource openstack-cinder-volume stopped 600
     # Disable all VIPs before stopping the cluster, so that pcs doesn't use one as a source address:
     #   https://bugzilla.redhat.com/show_bug.cgi?id=1330688
     for vip in $(pcs resource show | grep ocf::heartbeat:IPaddr2 | grep Started | awk '{ print $1 }'); do
@@ -115,7 +92,8 @@ if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)
     pcs cluster stop --all
 fi
 
-# Swift isn't controled by pacemaker
+
+# Swift isn't controlled by pacemaker
 systemctl_swift stop
 
 tstart=$(date +%s)
@@ -155,17 +133,19 @@ wsrep_on = ON
 wsrep_cluster_address = gcomm://localhost
 EOF
 
-if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)" ]; then
-    if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
-        # Scripts run via heat have no HOME variable set and this confuses
-        # mysqladmin
-        export HOME=/root
-        mkdir /var/lib/mysql || /bin/true
-        chown mysql:mysql /var/lib/mysql
-        chmod 0755 /var/lib/mysql
-        restorecon -R /var/lib/mysql/
-        mysql_install_db --datadir=/var/lib/mysql --user=mysql
-        chown -R mysql:mysql /var/lib/mysql/
+if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
+    # Scripts run via heat have no HOME variable set and this confuses
+    # mysqladmin
+    export HOME=/root
+
+    mkdir /var/lib/mysql || /bin/true
+    chown mysql:mysql /var/lib/mysql
+    chmod 0755 /var/lib/mysql
+    restorecon -R /var/lib/mysql/
+    mysql_install_db --datadir=/var/lib/mysql --user=mysql
+    chown -R mysql:mysql /var/lib/mysql/
+
+    if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)" ]; then
         mysqld_safe --wsrep-new-cluster &
         # We have a populated /root/.my.cnf with root/password here so
         # we need to temporarily rename it because the newly created
@@ -182,6 +162,9 @@ fi
 
 # If we reached here without error we can safely blow away the origin
 # mysql dir from every controller
+
+# TODO: What if the upgrade fails on the bootstrap node, but not on
+# this controller.  Data may be lost.
 if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
     rm -r $MYSQL_TEMP_UPGRADE_BACKUP_DIR
 fi
@@ -199,3 +182,9 @@ crudini  --set /etc/ceilometer/ceilometer.conf DEFAULT rpc_backend rabbit
 # https://bugzilla.redhat.com/show_bug.cgi?id=1284058
 # Ifd1861e3df46fad0e44ff9b5cbd58711bbc87c97 Swift Ceilometer middleware no longer exists
 crudini --set /etc/swift/proxy-server.conf pipeline:main pipeline "catch_errors healthcheck cache ratelimit tempurl formpost authtoken keystone staticweb proxy-logging proxy-server"
+# LP: 1615035, required only for M/N upgrade.
+crudini --set /etc/nova/nova.conf DEFAULT scheduler_host_manager host_manager
+# LP: 1627450, required only for M/N upgrade
+crudini --set /etc/nova/nova.conf DEFAULT scheduler_driver filter_scheduler
+
+crudini --set /etc/sahara/sahara.conf DEFAULT plugins ambari,cdh,mapr,vanilla,spark,storm

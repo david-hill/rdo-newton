@@ -30,6 +30,27 @@ parameters:
     type: string
     default: 'regionOne'
     description: Keystone region for endpoint
+  NeutronMetadataProxySharedSecret:
+    description: Shared secret to prevent spoofing
+    type: string
+    hidden: true
+  InstanceNameTemplate:
+    default: 'instance-%08x'
+    description: Template string to be used to generate instance names
+    type: string
+  NovaEnableDBPurge:
+    default: true
+    description: |
+        Whether to create cron job for purging soft deleted rows in Nova database.
+    type: boolean
+  MonitoringSubscriptionNovaApi:
+    default: 'overcloud-nova-api'
+    type: string
+  NovaApiLoggingSource:
+    type: json
+    default:
+      tag: openstack.nova.api
+      path: /var/log/nova/nova-api.log
 
 resources:
   NovaBase:
@@ -44,6 +65,10 @@ outputs:
     description: Role data for the Nova API service.
     value:
       service_name: nova_api
+      monitoring_subscription: {get_param: MonitoringSubscriptionNovaApi}
+      logging_source: {get_param: NovaApiLoggingSource}
+      logging_groups:
+        - nova
       config_settings:
         map_merge:
           - get_attr: [NovaBase, role_data, config_settings]
@@ -61,16 +86,47 @@ outputs:
                   - 8774
                   - 13774
                   - 8775
-            nova::api::admin_tenant_name: 'service'
+            nova::keystone::authtoken::project_name: 'service'
+            nova::keystone::authtoken::password: {get_param: NovaPassword}
+            nova::keystone::authtoken::auth_uri: {get_param: [EndpointMap, KeystoneInternal, uri] }
+            nova::keystone::authtoken::auth_url: {get_param: [EndpointMap, KeystoneAdmin, uri_no_suffix]}
             nova::api::enabled: true
             nova::api::default_floating_pool: 'public'
             nova::api::sync_db_api: true
             nova::api::enable_proxy_headers_parsing: true
-            nova::keystone::auth::tenant: 'service'
-            nova::keystone::auth::public_url: {get_param: [EndpointMap, NovaPublic, uri]}
-            nova::keystone::auth::internal_url: {get_param: [EndpointMap, NovaInternal, uri]}
-            nova::keystone::auth::admin_url: {get_param: [EndpointMap, NovaAdmin, uri]}
-            nova::keystone::auth::password: {get_param: NovaPassword}
-            nova::keystone::auth::region: {get_param: KeystoneRegion}
+            # NOTE: bind IP is found in Heat replacing the network name with the local node IP
+            # for the given network; replacement examples (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            nova::api::api_bind_address: {get_param: [ServiceNetMap, NovaApiNetwork]}
+            nova::api::metadata_listen: {get_param: [ServiceNetMap, NovaMetadataNetwork]}
+            nova::api::neutron_metadata_proxy_shared_secret: {get_param: NeutronMetadataProxySharedSecret}
+            nova::api::instance_name_template: {get_param: InstanceNameTemplate}
+            nova_enable_db_purge: {get_param: NovaEnableDBPurge}
+
       step_config: |
         include tripleo::profile::base::nova::api
+      service_config_settings:
+        keystone:
+          nova::keystone::auth::tenant: 'service'
+          nova::keystone::auth::public_url: {get_param: [EndpointMap, NovaPublic, uri]}
+          nova::keystone::auth::internal_url: {get_param: [EndpointMap, NovaInternal, uri]}
+          nova::keystone::auth::admin_url: {get_param: [EndpointMap, NovaAdmin, uri]}
+          nova::keystone::auth::password: {get_param: NovaPassword}
+          nova::keystone::auth::region: {get_param: KeystoneRegion}
+        mysql:
+          nova::db::mysql::password: {get_param: NovaPassword}
+          nova::db::mysql::user: nova
+          nova::db::mysql::host: {get_param: [EndpointMap, MysqlInternal, host_nobrackets]}
+          nova::db::mysql::dbname: nova
+          nova::db::mysql::allowed_hosts:
+            - '%'
+            - "%{hiera('mysql_bind_host')}"
+          nova::db::mysql_api::password: {get_param: NovaPassword}
+          nova::db::mysql_api::user: nova_api
+          nova::db::mysql_api::host: {get_param: [EndpointMap, MysqlInternal, host_nobrackets]}
+          nova::db::mysql_api::dbname: nova_api
+          nova::db::mysql_api::allowed_hosts:
+            - '%'
+            - "%{hiera('mysql_bind_host')}"

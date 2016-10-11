@@ -40,6 +40,41 @@ parameters:
     default: ''
     description: Libvirt VIF driver configuration for the network
     type: string
+  NovaPCIPassthrough:
+    description: >
+      List of PCI Passthrough whitelist parameters.
+      Example -
+      NovaPCIPassthrough:
+        - vendor_id: "8086"
+          product_id: "154c"
+          address: "0000:05:00.0"
+          physical_network: "datacentre"
+      For different formats, refer to the nova.conf documentation for
+      pci_passthrough_whitelist configuration
+    type: json
+    default: ''
+  NovaVcpuPinSet:
+    description: >
+      A list or range of physical CPU cores to reserve for virtual machine
+      processes.
+      Ex. NovaVcpuPinSet: ['4-12','^8'] will reserve cores from 4-12 excluding 8
+    type: comma_delimited_list
+    default: []
+  NovaReservedHostMemory:
+    description: >
+      Reserved RAM for host processes.
+    type: number
+    default: 2048
+    constraints:
+      - range: { min: 512 }
+  MonitoringSubscriptionNovaCompute:
+    default: 'overcloud-nova-compute'
+    type: string
+  NovaComputeLoggingSource:
+    type: json
+    default:
+      tag: openstack.nova.compute
+      path: /var/log/nova/nova-compute.log
 
 resources:
   NovaBase:
@@ -54,10 +89,21 @@ outputs:
     description: Role data for the Nova Compute service.
     value:
       service_name: nova_compute
+      monitoring_subscription: {get_param: MonitoringSubscriptionNovaCompute}
+      logging_source: {get_param: NovaComputeLoggingSource}
+      logging_groups:
+        - nova
       config_settings:
         map_merge:
           - get_attr: [NovaBase, role_data, config_settings]
           - nova::compute::libvirt::manage_libvirt_services: false
+            nova::compute::pci_passthrough:
+              str_replace:
+                template: "'JSON_PARAM'"
+                params:
+                  JSON_PARAM: {get_param: NovaPCIPassthrough}
+            nova::compute::vcpu_pin_set: {get_param: NovaVcpuPinSet}
+            nova::compute::reserved_host_memory: {get_param: NovaReservedHostMemory}
             # we manage migration in nova common puppet profile
             nova::compute::libvirt::migration_support: false
             tripleo::profile::base::nova::manage_migration: true
@@ -82,13 +128,18 @@ outputs:
             # encryption work will obsolete the need to use TUNNELLED transport
             # mode.
             nova::migration::live_migration_tunnelled: {get_param: NovaEnableRbdBackend}
-            # Changing the default from 512MB. The current templates can not deploy
-            # overclouds with swap. On an idle compute node, we see ~1024MB of RAM
-            # used. 2048 is suggested to account for other possible operations for
-            # example openvswitch.
-            nova::compute::reserved_host_memory: 2048
             nova::compute::neutron::libvirt_vif_driver: {get_param: NovaComputeLibvirtVifDriver}
-
+            # NOTE: bind IP is found in Heat replacing the network name with the
+            # local node IP for the given network; replacement examples
+            # (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            nova::compute::vncserver_proxyclient_address: {get_param: [ServiceNetMap, NovaVncProxyNetwork]}
+            nova::compute::vncproxy_host: {get_param: [EndpointMap, NovaPublic, host_nobrackets]}
+            nova::vncproxy::common::vncproxy_protocol: {get_param: [EndpointMap, NovaVNCProxyPublic, protocol]}
+            nova::vncproxy::common::vncproxy_host: {get_param: [EndpointMap, NovaVNCProxyPublic, host_nobrackets]}
+            nova::vncproxy::common::vncproxy_port: {get_param: [EndpointMap, NovaVNCProxyPublic, port]}
       step_config: |
         # TODO(emilien): figure how to deal with libvirt profile.
         # We'll probably treat it like we do with Neutron plugins.

@@ -2,37 +2,24 @@
 
 set -eux
 
-pacemaker_status=$(systemctl is-active pacemaker)
-
 # Run if pacemaker is running, we're the bootstrap node,
 # and we're updating the deployment (not creating).
-if [ "$pacemaker_status" = "active" -a \
-     "$(hiera bootstrap_nodeid)" = "$(facter hostname)" -a \
-     "$(hiera stack_action)" = "UPDATE" ]; then
+if [[ -n $(pcmk_running) && -n $(is_bootstrap_node) ]]; then
 
-    #ensure neutron constraints like
-    #https://review.openstack.org/#/c/245093/
-    if  pcs constraint order show  | grep "start neutron-server-clone then start neutron-ovs-cleanup-clone"; then
-        pcs constraint remove order-neutron-server-clone-neutron-ovs-cleanup-clone-mandatory
-    fi
+    TIMEOUT=600
+    SERVICES_TO_RESTART="$(ls /var/lib/tripleo/pacemaker-restarts)"
+    PCS_STATUS_OUTPUT="$(pcs status)"
 
-    pcs resource disable httpd
-    check_resource httpd stopped 300
-    pcs resource disable openstack-core
-    check_resource openstack-core stopped 1800
+    for service in $SERVICES_TO_RESTART; do
+        if ! echo "$PCS_STATUS_OUTPUT" | grep $service; then
+            echo "Service $service not found as a pacemaker resource, cannot restart it."
+            exit 1
+        fi
+    done
 
-    if pcs status | grep haproxy-clone; then
-        pcs resource restart haproxy-clone
-    fi
-    pcs resource restart redis-master
-    pcs resource restart mongod-clone
-    pcs resource restart rabbitmq-clone
-    pcs resource restart memcached-clone
-    pcs resource restart galera-master
-
-    pcs resource enable openstack-core
-    check_resource openstack-core started 1800
-    pcs resource enable httpd
-    check_resource httpd started 800
-
+    for service in $SERVICES_TO_RESTART; do
+        echo "Restarting $service..."
+        pcs resource restart --wait=$TIMEOUT $service
+        rm -f /var/lib/tripleo/pacemaker-restarts/$service
+    done
 fi

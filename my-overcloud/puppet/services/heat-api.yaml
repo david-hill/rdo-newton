@@ -30,6 +30,14 @@ parameters:
     type: string
     default: 'regionOne'
     description: Keystone region for endpoint
+  MonitoringSubscriptionHeatApi:
+    default: 'overcloud-heat-api'
+    type: string
+  HeatApiLoggingSource:
+    type: json
+    default:
+      tag: openstack.heat.api
+      path: /var/log/heat/heat-api.log
 
 resources:
   HeatBase:
@@ -44,20 +52,33 @@ outputs:
     description: Role data for the Heat API role.
     value:
       service_name: heat_api
+      monitoring_subscription: {get_param: MonitoringSubscriptionHeatApi}
+      logging_source: {get_param: HeatApiLoggingSource}
+      logging_groups:
+        - heat
       config_settings:
         map_merge:
           - get_attr: [HeatBase, role_data, config_settings]
           - heat::api::workers: {get_param: HeatWorkers}
-            heat::keystone::auth::tenant: 'service'
-            heat::keystone::auth::public_url: {get_param: [EndpointMap, HeatPublic, uri]}
-            heat::keystone::auth::internal_url: {get_param: [EndpointMap, HeatInternal, uri]}
-            heat::keystone::auth::admin_url: {get_param: [EndpointMap, HeatAdmin, uri]}
-            heat::keystone::auth::password: {get_param: HeatPassword}
-            heat::keystone::auth::region: {get_param: KeystoneRegion}
             tripleo.heat_api.firewall_rules:
               '125 heat_api':
                 dport:
                   - 8004
                   - 13004
+            # NOTE: bind IP is found in Heat replacing the network name with the
+            # local node IP for the given network; replacement examples
+            # (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            heat::api::bind_host: {get_param: [ServiceNetMap, HeatApiNetwork]}
       step_config: |
         include ::tripleo::profile::base::heat::api
+      service_config_settings:
+        keystone:
+          heat::keystone::auth::tenant: 'service'
+          heat::keystone::auth::public_url: {get_param: [EndpointMap, HeatPublic, uri]}
+          heat::keystone::auth::internal_url: {get_param: [EndpointMap, HeatInternal, uri]}
+          heat::keystone::auth::admin_url: {get_param: [EndpointMap, HeatAdmin, uri]}
+          heat::keystone::auth::password: {get_param: HeatPassword}
+          heat::keystone::auth::region: {get_param: KeystoneRegion}

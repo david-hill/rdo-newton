@@ -34,6 +34,14 @@ parameters:
       - allowed_values:
         - legacy
         - dvr_snat
+  MonitoringSubscriptionNeutronL3:
+    default: 'overcloud-neutron-l3-agent'
+    type: string
+  NeutronL3AgentLoggingSource:
+    type: json
+    default:
+      tag: openstack.neutron.agent.l3
+      path: /var/log/neutron/l3-agent.log
 
 resources:
 
@@ -49,11 +57,18 @@ outputs:
     description: Role data for the Neutron L3 agent service.
     value:
       service_name: neutron_l3
+      monitoring_subscription: {get_param: MonitoringSubscriptionNeutronL3}
+      logging_source: {get_param: NeutronL3AgentLoggingSource}
+      logging_groups:
+        - neutron
       config_settings:
         map_merge:
           - get_attr: [NeutronBase, role_data, config_settings]
           - neutron::agents::l3::external_network_bridge: {get_param: NeutronExternalNetworkBridge}
             neutron::agents::l3::router_delete_namespaces: True
             neutron::agents::l3::agent_mode : {get_param: NeutronL3AgentMode}
+            tripleo.neutron_l3.firewall_rules:
+              '106 neutron_l3 vrrp':
+                proto: vrrp
       step_config: |
         include tripleo::profile::base::neutron::l3

@@ -4,7 +4,9 @@ description: >
   Ceph base service. Shared by all Ceph services.
 
 parameters:
+  # NOTE(gfidente): needs a default to cope with external Ceph deployments were we don't pass (and need) an Admin key
   CephAdminKey:
+    default: ''
     description: The Ceph admin client key. Can be created with ceph-authtool --gen-print-key.
     type: string
     hidden: true
@@ -18,9 +20,6 @@ parameters:
   CephClusterFSID:
     type: string
     description: The Ceph cluster FSID. Must be a UUID.
-  CephIPv6:
-    default: False
-    type: boolean
   CinderRbdPoolName:
     default: volumes
     type: string
@@ -70,13 +69,34 @@ outputs:
     value:
       service_name: ceph_base
       config_settings:
-        tripleo::profile::base::ceph::ceph_ipv6: {get_param: CephIPv6}
         tripleo::profile::base::ceph::enable_ceph_storage: {get_param: ControllerEnableCephStorage}
         ceph::profile::params::osd_pool_default_min_size: 1
         ceph::profile::params::osds: {/srv/data: {}}
         ceph::profile::params::manage_repo: false
         ceph::profile::params::authentication_type: cephx
         ceph::profile::params::fsid: {get_param: CephClusterFSID}
+        # FIXME(gfidente): we should not have to list the packages explicitly in the templates,
+        # but this has to stay until https://bugs.launchpad.net/puppet-ceph/+bug/1629933 is fixed
+        ceph::params::packages:
+          - ceph-base
+          - ceph-mon
+          - ceph-osd
+        # NOTE: bind IP is found in Heat replacing the network name with the local node IP
+        # for the given network; replacement examples (eg. for internal_api):
+        # internal_api -> IP
+        # internal_api_uri -> [IP]
+        # internal_api_subnet - > IP/CIDR
+        ceph::profile::params::cluster_network:
+          str_replace:
+            template: "NETWORK_subnet"
+            params:
+              NETWORK: {get_param: [ServiceNetMap, CephClusterNetwork]}
+        ceph::profile::params::public_network:
+          str_replace:
+            template: "NETWORK_subnet"
+            params:
+              NETWORK: {get_param: [ServiceNetMap, CephMonNetwork]}
+        ceph::profile::params::public_addr: {get_param: [ServiceNetMap, CephMonNetwork]}
         ceph::profile::params::client_keys:
           str_replace:
             template: "{

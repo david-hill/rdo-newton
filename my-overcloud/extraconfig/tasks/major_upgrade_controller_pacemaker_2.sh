@@ -3,10 +3,10 @@
 set -eu
 
 cluster_form_timeout=600
-cluster_settle_timeout=600
+cluster_settle_timeout=1800
 galera_sync_timeout=600
 
-if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)" ]; then
+if [[ -n $(is_bootstrap_node) ]]; then
     pcs cluster start --all
 
     tstart=$(date +%s)
@@ -26,14 +26,23 @@ if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)
 
     for vip in $(pcs resource show | grep ocf::heartbeat:IPaddr2 | grep Stopped | awk '{ print $1 }'); do
       pcs resource enable $vip
-      check_resource $vip started 60
+      check_resource_pacemaker $vip started 60
     done
+fi
 
-    pcs resource enable galera
-    check_resource galera started 600
-    pcs resource enable mongod
-    check_resource mongod started 600
+start_or_enable_service galera
+check_resource galera started 600
+start_or_enable_service redis
+check_resource redis started 600
+# We need mongod which is now a systemd service up and running before calling
+# ceilometer-dbsync. There is still a race here: mongod might not be up on all nodes
+# so ceilometer-dbsync will fail a couple of times before that. As it retries indefinitely
+# we should be good.
+# Due to LP Bug https://bugs.launchpad.net/tripleo/+bug/1627254 am using systemctl directly atm
+systemctl start mongod
+check_resource mongod started 600
 
+if [[ -n $(is_bootstrap_node) ]]; then
     tstart=$(date +%s)
     while ! clustercheck; do
         sleep 5
@@ -53,18 +62,8 @@ if [ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)
     keystone-manage db_sync
     neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugin.ini upgrade head
     nova-manage db sync
-
-    pcs resource enable memcached
-    check_resource memcached started 600
-    pcs resource enable rabbitmq
-    check_resource rabbitmq started 600
-    pcs resource enable redis
-    check_resource redis started 600
-    pcs resource enable openstack-core
-    check_resource openstack-core started 1800
-    pcs resource enable httpd
-    check_resource httpd started 1800
+    nova-manage api_db sync
+    nova-manage db online_data_migrations
+    gnocchi-upgrade
+    sahara-db-manage --config-file /etc/sahara/sahara.conf upgrade head
 fi
-
-# Swift isn't controled by heat
-systemctl_swift start

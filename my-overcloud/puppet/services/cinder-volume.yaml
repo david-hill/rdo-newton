@@ -56,6 +56,14 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
+  MonitoringSubscriptionCinderVolume:
+    default: 'overcloud-cinder-volume'
+    type: string
+  CinderVolumeLoggingSource:
+    type: json
+    default:
+      tag: openstack.cinder.volume
+      path: /var/log/cinder/cinder-volume.log
 
 resources:
 
@@ -71,6 +79,10 @@ outputs:
     description: Role data for the Cinder Volume role.
     value:
       service_name: cinder_volume
+      monitoring_subscription: {get_param: MonitoringSubscriptionCinderVolume}
+      logging_source: {get_param: CinderVolumeLoggingSource}
+      logging_groups:
+        - cinder
       config_settings:
         map_merge:
           - get_attr: [CinderBase, role_data, config_settings]
@@ -90,5 +102,11 @@ outputs:
             tripleo.cinder_volume.firewall_rules:
               '120 iscsi initiator':
                 dport: 3260
+            # NOTE: bind IP is found in Heat replacing the network name with the local node IP
+            # for the given network; replacement examples (eg. for internal_api):
+            # internal_api -> IP
+            # internal_api_uri -> [IP]
+            # internal_api_subnet - > IP/CIDR
+            tripleo::profile::base::cinder::volume::iscsi::cinder_iscsi_address: {get_param: [ServiceNetMap, CinderIscsiNetwork]}
       step_config: |
         include ::tripleo::profile::base::cinder::volume

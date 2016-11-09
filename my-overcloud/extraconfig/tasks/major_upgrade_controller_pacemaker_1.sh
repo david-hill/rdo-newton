@@ -13,12 +13,28 @@ check_python_rpm
 check_galera_root_password
 check_disk_for_mysql_dump
 
+# M/N Upgrade only: By default RHEL/Centos has an /etc/sysconfig/iptables file which
+# allows ssh and icmp only (INPUT table). During the install of OSP9/Mitaka
+# usually the live iptables rules are not the ones in /etc/sysconfig/iptables but
+# they are completely open (ACCEPT)
+# Now when we run the convergence step while migrating to Newton we enable the firewall
+# by default and this will actually first load the rules from /etc/sysconfig/iptables
+# and only afterwards, it will start adding all the rules permitting openstack traffic.
+# This causes an outage of roughly 1 minute in our env, which disrupts the cluster.
+# Let's simply move the existing file out of the way, it will be recreated by
+# puppet in newton with the proper firewall rules anyway
+if [ ! -f /etc/sysconfig/iptables.m-n-upgrade ]; then
+    mv /etc/sysconfig/iptables /etc/sysconfig/iptables.m-n-upgrade || /bin/true
+fi
+
 # We want to disable fencing during the cluster --stop as it might fence
 # nodes where a service fails to stop, which could be fatal during an upgrade
 # procedure. So we remember the stonith state. If it was enabled we reenable it
 # at the end of this script
-STONITH_STATE=$(pcs property show stonith-enabled | grep "stonith-enabled" | awk '{ print $2 }')
-pcs property set stonith-enabled=false
+if [[ -n $(is_bootstrap_node) ]]; then
+    STONITH_STATE=$(pcs property show stonith-enabled | grep "stonith-enabled" | awk '{ print $2 }')
+    pcs property set stonith-enabled=false
+fi
 
 # Migrate to HA NG
 if [[ -n $(is_bootstrap_node) ]]; then
@@ -116,6 +132,20 @@ if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
     mv /var/lib/mysql $MYSQL_TEMP_UPGRADE_BACKUP_DIR
 fi
 
+# Special-case OVS for https://bugs.launchpad.net/tripleo/+bug/1635205
+if [[ -n $(rpm -q --scripts openvswitch | awk '/postuninstall/,/*/' | grep "systemctl.*try-restart") ]]; then
+    echo "Manual upgrade of openvswitch - restart in postun detected"
+    mkdir OVS_UPGRADE || true
+    pushd OVS_UPGRADE
+    echo "Attempting to downloading latest openvswitch with yumdownloader"
+    yumdownloader --resolve openvswitch
+    echo "Updating openvswitch with nopostun option"
+    rpm -U --replacepkgs --nopostun ./*.rpm
+    popd
+else
+    echo "Skipping manual upgrade of openvswitch - no restart in postun detected"
+fi
+
 yum -y install python-zaqarclient  # needed for os-collect-config
 yum -y -q update
 
@@ -166,8 +196,10 @@ if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
 fi
 
 # Let's reset the stonith back to true if it was true, before starting the cluster
-if [ $STONITH_STATE == "true" ]; then
-    pcs -f /var/lib/pacemaker/cib/cib.xml property set stonith-enabled=true
+if [[ -n $(is_bootstrap_node) ]]; then
+    if [ $STONITH_STATE == "true" ]; then
+        pcs -f /var/lib/pacemaker/cib/cib.xml property set stonith-enabled=true
+    fi
 fi
 
 # Pin messages sent to compute nodes to kilo, these will be upgraded later

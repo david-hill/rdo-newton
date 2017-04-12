@@ -50,7 +50,7 @@ mysql_need_update
 
 if [[ -n $(is_bootstrap_node) ]]; then
     if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
-        mysqldump $backup_flags > "$MYSQL_BACKUP_DIR/openstack_database.sql"
+        mysqldump $BACKUP_FLAGS > "$MYSQL_BACKUP_DIR/openstack_database.sql"
         cp -rdp /etc/my.cnf* "$MYSQL_BACKUP_DIR"
     fi
 
@@ -97,20 +97,6 @@ if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
         exit 1
     fi
     mv /var/lib/mysql $MYSQL_TEMP_UPGRADE_BACKUP_DIR
-fi
-
-# Special-case OVS for https://bugs.launchpad.net/tripleo/+bug/1635205
-if [[ -n $(rpm -q --scripts openvswitch | awk '/postuninstall/,/*/' | grep "systemctl.*try-restart") ]]; then
-    echo "Manual upgrade of openvswitch - restart in postun detected"
-    mkdir OVS_UPGRADE || true
-    pushd OVS_UPGRADE
-    echo "Attempting to downloading latest openvswitch with yumdownloader"
-    yumdownloader --resolve openvswitch
-    echo "Updating openvswitch with nopostun option"
-    rpm -U --replacepkgs --nopostun ./*.rpm
-    popd
-else
-    echo "Skipping manual upgrade of openvswitch - no restart in postun detected"
 fi
 
 yum -y install python-zaqarclient  # needed for os-collect-config

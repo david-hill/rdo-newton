@@ -42,7 +42,10 @@ if [[ "$list_updates" == "" ]]; then
     exit 0
 fi
 
-pacemaker_status=$(systemctl is-active pacemaker)
+pacemaker_status=""
+if hiera -c /etc/puppet/hiera.yaml service_names | grep -q pacemaker; then
+    pacemaker_status=$(systemctl is-active pacemaker)
+fi
 
 # Fix the redis/rabbit resource start/stop timeouts. See https://bugs.launchpad.net/tripleo/+bug/1633455
 # and https://bugs.launchpad.net/tripleo/+bug/1634851
@@ -62,7 +65,6 @@ if [[ "$pacemaker_status" == "active" && \
     fi
 fi
 
-
 if [[ "$pacemaker_status" == "active" ]] ; then
     echo "Pacemaker running, stopping cluster node and doing full package update"
     node_count=$(pcs status xml | grep -o "<nodes_configured.*/>" | grep -o 'number="[0-9]*"' | grep -o "[0-9]*")
@@ -81,20 +83,6 @@ else
     exit 0
 fi
 
-# Special-case OVS for https://bugs.launchpad.net/tripleo/+bug/1635205
-if [[ -n $(rpm -q --scripts openvswitch | awk '/postuninstall/,/*/' | grep "systemctl.*try-restart") ]]; then
-    echo "Manual upgrade of openvswitch - restart in postun detected"
-    mkdir OVS_UPGRADE || true
-    pushd OVS_UPGRADE
-    echo "Attempting to downloading latest openvswitch with yumdownloader"
-    yumdownloader --resolve openvswitch
-    echo "Updating openvswitch with nopostun option"
-    rpm -U --replacepkgs --nopostun ./*.rpm
-    popd
-else
-    echo "Skipping manual upgrade of openvswitch - no restart in postun detected"
-fi
-
 command=${command:-update}
 full_command="yum -q -y $command $command_arguments"
 echo "Running: $full_command"
@@ -103,6 +91,17 @@ result=$($full_command)
 return_code=$?
 echo "$result"
 echo "yum return code: $return_code"
+
+# Writes any changes caused by alterations to os-net-config and bounces the
+# interfaces *before* restarting the cluster.
+os-net-config -c /etc/os-net-config/config.json -v --detailed-exit-codes
+RETVAL=$?
+if [[ $RETVAL == 2 ]]; then
+    echo "os-net-config: interface configuration files updated successfully"
+elif [[ $RETVAL != 0 ]]; then
+    echo "ERROR: os-net-config configuration failed"
+    exit $RETVAL
+fi
 
 if [[ "$pacemaker_status" == "active" ]] ; then
     echo "Starting cluster node"
@@ -137,6 +136,15 @@ if [[ "$pacemaker_status" == "active" ]] ; then
     fi
 
     pcs status
+fi
+
+# We didn't complete the M->N upgrades correctly with a
+# `nova-manage db online_data_migrations` command before, which might result in
+# a performance impairment. So, as a stop-gap-solution we run it here on the
+# first controller node, which is a noop if there is nothing to do.
+if hiera -c /etc/puppet/hiera.yaml service_names | grep -q nova_api && \
+  [[ "$(hiera -c /etc/puppet/hiera.yaml bootstrap_nodeid)" = "$(facter hostname)" ]] ; then
+    /usr/bin/nova-manage db online_data_migrations
 fi
 
 echo "Finished yum_update.sh on server $deploy_server_id at `date`"

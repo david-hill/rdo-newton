@@ -99,8 +99,17 @@ if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
     mv /var/lib/mysql $MYSQL_TEMP_UPGRADE_BACKUP_DIR
 fi
 
+# Special-case OVS for https://bugs.launchpad.net/tripleo/+bug/1669714
+special_case_ovs_upgrade_if_needed
+
 yum -y install python-zaqarclient  # needed for os-collect-config
 yum -y -q update
+
+# Hack around mod_ssl and ssl.conf - we want mod_ssl but we need to prevent
+# packaging from configuring ssl.conf (puppet does that later)
+# https://bugs.launchpad.net/tripleo/+bug/1682448
+touch /etc/httpd/conf.d/ssl.conf
+yum install -y mod_ssl
 
 # We need to ensure at least those two configuration settings, otherwise
 # mariadb 10.1+ won't activate galera replication.

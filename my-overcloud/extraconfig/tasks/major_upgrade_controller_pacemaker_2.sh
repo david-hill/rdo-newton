@@ -62,6 +62,15 @@ if [[ -n $(is_bootstrap_node) ]]; then
     check_resource galera stopped 600
     pcs resource disable openstack-cinder-volume
     check_resource openstack-cinder-volume stopped 600
+
+    # We want to remove any duplicate/leftover cinder service
+    # leftover in the database.
+    cinder-manage service list | \
+        awk '/^cinder/{print $1  " "  $2}' | \
+        while read service host; do
+            cinder-manage service remove $service $host;
+        done
+
     # Disable all VIPs before stopping the cluster, so that pcs doesn't use one as a source address:
     #   https://bugzilla.redhat.com/show_bug.cgi?id=1330688
     for vip in $(pcs resource show | grep ocf::heartbeat:IPaddr2 | grep Started | awk '{ print $1 }'); do
@@ -100,7 +109,17 @@ if [ $DO_MYSQL_UPGRADE -eq 1 ]; then
 fi
 
 # Special-case OVS for https://bugs.launchpad.net/tripleo/+bug/1669714
-special_case_ovs_upgrade_if_needed
+update_network
+
+if grep -q '^pipeline = ssl_header_handler faultwrap osvolumeversionapp' /etc/cinder/api-paste.ini; then
+    # Revert back cinder SSL setup as it's going to be handled by wsgi.
+    echo "Removing default ssl configuration for rpm configuration upgrade."
+    crudini --del /etc/cinder/api-paste.ini filter:ssl_header_handler
+    crudini --set /etc/cinder/api-paste.ini pipeline:apiversions pipeline 'cors http_proxy_to_wsgi faultwrap osvolumeversionapp'
+    ## remove empty line at eof if present.
+    sed -i '$ { /^$/d }' /etc/cinder/api-paste.ini
+fi
+
 
 yum -y install python-zaqarclient  # needed for os-collect-config
 yum -y -q update
